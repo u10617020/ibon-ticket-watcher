@@ -1,0 +1,67 @@
+name: ibon ticket watcher
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ibon-watch
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+    steps:
+      - name: Check public ticket page
+        shell: python
+        run: |
+          import os, urllib.request, urllib.parse, json, re
+          from html.parser import HTMLParser
+          url = "https://orders.ibon.com.tw/application/UTK02/UTK0201_000.aspx?PERFORMANCE_ID=B0CC4N01&PRODUCT_ID=B0CB1UNY&strItem=WEB%E7%B6%B2%E7%AB%99%E5%85%A5%E5%8F%A31"
+          class Parser(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.parts = []
+                  self.skip = 0
+              def handle_starttag(self, tag, attrs):
+                  if tag in ("script", "style"): self.skip += 1
+              def handle_endtag(self, tag):
+                  if tag in ("script", "style"): self.skip = max(0,self.skip-1)
+              def handle_data(self, data):
+                  if not self.skip: self.parts.append(data.strip())
+          def notify(message):
+              token = os.environ.get("TELEGRAM_BOT_TOKEN")
+              chat = os.environ.get("TELEGRAM_CHAT_ID")
+              if not token or not chat: raise SystemExit("Configure Telegram repository secrets")
+              payload = urllib.parse.urlencode({"chat_id":chat,"text":message}).encode()
+              try:
+                  with urllib.request.urlopen("https://api.telegram.org/bot"+token+"/sendMessage", data=payload, timeout=15) as r:
+                      if not json.load(r).get("ok"): raise ValueError()
+              except Exception:
+                  raise SystemExit("Telegram notification failed") from None
+          manual = os.environ.get("MANUAL") == "true"
+          if manual: notify("ibon 監控：手動執行測試，通知正常。")
+          try:
+              with urllib.request.urlopen(url, timeout=25) as r:
+                  raw = r.read(2000000).decode(r.headers.get_content_charset() or "utf-8", errors="replace")
+          except Exception as e:
+              print("Ticket page unavailable:", type(e).__name__)
+              if manual: notify("ibon 網頁無法讀取，尚未確認餘票。")
+              raise SystemExit(1)
+          p = Parser()
+          p.feed(raw)
+          page = " ".join(p.parts)
+          if re.search(r"驗證碼|存取遭拒|Access Denied|排隊中",page,re.I):
+              print("Access or queue restriction; no bypass")
+              raise SystemExit(1)
+          matches = re.findall(r"(?:剩餘|剩下|可售)(?:票數|張數)?\s*[:：]?\s*([0-9]+)\s*張",page)
+          if any(int(n)>=2 for n in matches):
+              notify("ibon 偵測到可能至少兩張餘票，區域不限，請人工確認是否可購買及連位："+url)
+          else:
+              print("No verified two-ticket availability; parser not validated on live page")
+              if manual: notify("ibon 網頁已讀取，但未能確認兩張餘票。")
