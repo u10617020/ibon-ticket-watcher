@@ -1,7 +1,5 @@
 name: ibon ticket watcher
 on:
-  schedule:
-    - cron: '*/5 * * * *'
   workflow_dispatch:
 permissions:
   contents: read
@@ -50,8 +48,8 @@ jobs:
               with urllib.request.urlopen(url, timeout=25) as r:
                   raw = r.read(2000000).decode(r.headers.get_content_charset() or "utf-8", errors="replace")
           except Exception as e:
-              print("Ticket page unavailable:", type(e).__name__)
-              if manual: notify("ibon 網頁無法讀取，尚未確認餘票。")
+              print("Ticket page unavailable:", type(e).__name__, getattr(e, "code", "unknown"))
+              if manual: notify("ibon 網頁無法讀取，HTTP 狀態："+str(getattr(e, "code", "unknown"))+"，尚未確認餘票。")
               raise SystemExit(1)
           p = Parser()
           p.feed(raw)
